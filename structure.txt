@@ -1,0 +1,16 @@
+custom-dialer/
+├── app/                          # точка входа, DI-граф, MainActivity
+├── core/
+│   ├── data/                     # Room, репозитории, DataStore
+│   ├── domain/                   # движок правил, use cases, модели
+│   ├── ui/                       # тема, общие компоненты, навигация
+│   └── telecom/                  # InCallService, CallRedirectionService, TelecomManager wrapper
+└── feature/
+    ├── onboarding/
+    ├── dialer/
+    ├── incall/
+    ├── calllog/
+    ├── contacts/
+    ├── rules/
+    ├── exceptions/
+    └── settings/

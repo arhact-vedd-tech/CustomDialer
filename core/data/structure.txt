@@ -1,0 +1,32 @@
+com.example.dialer.core.data
+├── db/
+│   ├── DialerDatabase.kt
+│   ├── entity/
+│   │   ├── RuleEntity.kt
+│   │   ├── RuleConditionEntity.kt
+│   │   ├── RuleTargetEntity.kt
+│   │   ├── ExceptionEntity.kt
+│   │   ├── LabelEntity.kt
+│   │   ├── ContactLabelEntity.kt
+│   │   ├── CallLogExtrasEntity.kt
+│   │   └── QuickPrefixEntity.kt
+│   ├── dao/
+│   │   ├── RuleDao.kt
+│   │   ├── ExceptionDao.kt
+│   │   ├── LabelDao.kt
+│   │   ├── CallLogExtrasDao.kt
+│   │   └── QuickPrefixDao.kt
+│   └── converter/Converters.kt
+├── repository/
+│   ├── RuleRepositoryImpl.kt
+│   ├── ExceptionRepositoryImpl.kt
+│   ├── CallLogRepositoryImpl.kt
+│   └── ContactRepositoryImpl.kt
+├── calllog/
+│   └── SystemCallLogWriter.kt     # запись в системный CallLog
+├── prefs/
+│   └── SettingsDataStore.kt
+└── di/
+    ├── DatabaseModule.kt
+    ├── RepositoryModule.kt
+    └── DataStoreModule.kt

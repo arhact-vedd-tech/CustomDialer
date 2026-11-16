@@ -1,0 +1,12 @@
+com.example.dialer.core.ui
+├── theme/
+│   ├── Theme.kt
+│   ├── Color.kt
+│   └── Type.kt
+├── component/
+│   ├── EmptyState.kt
+│   ├── LoadingIndicator.kt
+│   └── ConfirmDialog.kt
+└── navigation/
+    ├── Destinations.kt
+    └── MainNavigation.kt
