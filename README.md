@@ -29,7 +29,7 @@
 ## 2. Целевая платформа и стек технологий
 
 - **minSdk:** Android 10 (API 29) — минимальная версия для корректной работы `ROLE_DIALER` и `CallRedirectionService`.
-- **targetSdk:** актуальный на момент старта (35).
+- **targetSdk:** `targetSdk 35`, `compileSdk 35`. При обновлении до 36 — отдельная задача с проверкой изменений в `Telecom` и `RoleManager`.
 - **Язык:** Kotlin.
 - **UI:** Jetpack Compose (Material 3 / Material You).
 - **Архитектура:** MVVM + Clean (data / domain / ui).
@@ -56,7 +56,9 @@
 
 Информационная архитектура и UX-паттерны повторяют Google Dialer. Отличие — модуль префиксов (раздел 4).
 
-- **Набор номера (T9 Dialer):** цифровая клавиатура с быстрым поиском по контактам (кириллица и латиница), вставка из буфера обмена. Дополнительно — программируемые кнопки быстрых префиксов.
+- **Набор номера (T9 Dialer):** 
+- **T9-поиск.** Системный `CONTACT_T9` через `PhoneLookup` покрывает латиницу. Для кириллицы — **собственная индексация**: таблица `ContactIndex(contactId, normalizedName, t9Digits)` в Room, заполняется при синхронизации контактов. Маппинг цифра→буквы для кириллицы: `2=АБВГ`, `3=ДЕЁЖЗ`, `4=ИЙКЛ`, `5=МНОП`, `6=РСТУ`, `7=ФХЦЧ`, `8=ШЩЪЫ`, `9=ЬЭЮЯ`. Латиница — стандартный маппинг. Поиск идёт по `t9Digits` через `LIKE 'prefix%'`.
+- **Оценка:** отдельная задача, ~3–4 дня. В MVP можно отгрузить только латиницу, кириллицу — расширенная версия. **Решить сейчас:** MVP без кириллического T9. **Дополнительно:** программируемые кнопки быстрых префиксов.
 - **Экран активного вызова (In-Call UI):** имя/фото, таймер, Hold / Mute / Speaker / DTMF / End. Индикатор активной SIM. Поддержка конференции (merge, split) — требование контракта `InCallService`.
 - **Журнал вызовов (Call Log):** входящие, исходящие, пропущенные; группировка, фильтры, длительность, время. **В системный CallLog пишется исходный номер абонента (без префикса).** Применённый префикс хранится в собственной таблице `CallLogExtras` и отображается бейджем.
 - **Контакты и Избранное:** синхронизация с системной адресной книгой, карточка контакта, избранное, быстрый звонок свайпом.
@@ -73,9 +75,23 @@
 
 ### 4.1. Режимы работы
 
-- **Автоматический (по правилам):** подстановка префикса без участия пользователя при совпадении номера с шаблоном.
-- **Полуавтоматический (выбор перед звонком):** bottom sheet с вариантами набора («Напрямую» / «Через правило X»).
-- **Ручной (быстрые кнопки):** программируемые кнопки на экране набора (например, `+7`, `8`, `#31#`, `9`).
+| Режим | Где принимается решение | Что попадает в `CallRedirectionService` |
+|---|---|---|
+| Автоматический | Внутри `onPlaceCall`, по правилам | Ничего (extra отсутствует) |
+| Полуавтоматический | В UI **до** `placeCall` | `EXTRA_OUTGOING_CALL_EXTRAS`: `forcedRuleId` (Long) или `FORCE_DIRECT` (sentinel) |
+| Ручной | Кнопки на экране набора, модифицируют строку до `placeCall` | Ничего (номер уже с префиксом, правила не применяются) |
+
+**Критично:** `CallRedirectionService.onPlaceCall` **не показывает UI**. Таймаут ответа — ~5 сек, иначе вызов сбрасывается. Выбор правила в полуавто происходит в активити набора, результат кладётся в `Bundle` через `TelecomManager.placeCall(handle, uri, extras)`.
+
+**Логика `onPlaceCall`:**
+
+```
+1. Прочитать EXTRA_OUTGOING_CALL_EXTRAS
+2. Если forcedRuleId == FORCE_DIRECT → redirectCall(originalUri) без изменений
+3. Если forcedRuleId != null → применить это правило (если enabled)
+4. Иначе → first-match по приоритету среди enabled, с учётом exceptions/whitelist
+5. Нет матча → redirectCall(originalUri)
+```
 
 ### 4.2. Конструктор правил
 
@@ -110,7 +126,7 @@ Room-схема.
 
 | Таблица | Поля |
 |---|---|
-| `Rule` | `id`, `name`, `enabled`, `priority` (int), `actionType` (STRIP/PREPEND/STRIP_PREPEND), `actionValue`, `simSlot` (nullable) |
+| `Rule` | `id`, `name`, `enabled`, `priority` (int), `stripCount` (int, nullable), `prependValue` (text, nullable), `simSlot` (int, nullable) |
 | `RuleCondition` | `id`, `ruleId`, `type` (LENGTH/STARTS_WITH/LABEL), `value` |
 | `RuleTarget` | `id`, `ruleId`, `targetType` (NUMBER/LABEL), `targetValue` — белый список |
 | `Exception` | `id`, `type` (NUMBER/LABEL), `value`, `locked` (bool) |
@@ -123,6 +139,31 @@ Room-схема.
 
 - **Дизайн:** Material Design 3 (Material You), светлая и тёмная темы, динамические цвета.
 - **Приватность:** никакой отправки данных на внешние серверы. Всё локально. Экспорт/импорт правил — JSON-файл через SAF.
+Экспорт — JSON с корневой структурой:
+
+```json
+{
+  "schemaVersion": 1,
+  "exportedAt": "2026-11-17T...",
+  "rules": [...],
+  "exceptions": [...],
+  "whitelist": [...],
+  "quickPrefixes": [...],
+  "labels": [...]
+}
+```
+
+Импорт:
+
+| Условие | Поведение |
+|---|---|
+| `schemaVersion` отсутствует или > текущей | Отказ, сообщение «файл от более новой версии» |
+| `schemaVersion` < текущей | Прогнать через цепочку миграций |
+| Валидация не прошла (битый JSON, нет обязательных полей) | Отказ, файл не трогаем, состояние не меняем |
+| Валидна | **Полная замена** состояния (не merge). Подтверждение в UI: «Текущие правила будут удалены» |
+
+`schemaVersion` инкрементится при любом изменении структуры. Тест на импорт v1→v2 обязателен в расширенной версии.
+
 - **Стабильность входящих:** `FOREGROUND_SERVICE_PHONE_CALL`, `USE_FULL_SCREEN_INTENT`. Тест-план на Xiaomi (MIUI), Samsung (One UI), Huawei (EMUI) — проверка heads-up и full-screen intent при заблокированном экране.
 - **Локализация:** русский, английский. T9 — обе раскладки.
 
@@ -156,6 +197,11 @@ Room-схема.
 - В `CallLogExtras` — `appliedRuleId`, `dialedNumber = 9991234567`.
 - Входящий отображается full-screen при заблокированном экране на Xiaomi и Samsung.
 - Журнал: входящие/исходящие/пропущенные, группировка.
+- Полуавто-режим: выбор правила в UI → `forcedRuleId` доходит до `onPlaceCall` → применяется именно оно, не first-match.
+- `onPlaceCall` отвечает за < 2 сек на 100 правилах (бенчмарк, юнит-тест).
+- Роль не выдана → редирекшн не применяется (проверка `isRoleHeld`).
+- Правило с `simSlot=0` не матчится, если слот не определён (fail-safe).
+- Импорт JSON без `schemaVersion` → отказ, состояние не изменено.
 
 ### 8.2. Расширенная версия
 
@@ -181,11 +227,79 @@ Room-схема.
 
 - **CallLog-механика:** в системный `CallLog` пишется исходный номер. Префикс — в `CallLogExtras` (своя таблица, связь по `callLogId`). Постфактумная перезапись системного журнала не используется — гонка и потеря данных.
 - **`CallRedirectionService`:** именно здесь происходит трансформация номера до `placeCall`. Сервис обязан вернуть `redirectCall` или `cancelCall` в пределах таймаута; зависание = сброс вызова.
-- **`InCallService`:** обязателен полный контракт — audio routing, hold, merge, conference, disconnect. Без него система не даст роль.
+- **`InCallService`:** `InCallService` обязан реализовать:
+
+| Callback | Назначение |
+|---|---|
+| `onCallAdded` / `onCallRemoved` | Управление списком вызовов |
+| `onCallAudioStateChanged` | Mute / speaker / route |
+| `onSilenceRinger` | Кнопка «тишина» |
+| `onAnswer` / `onReject` | Приём/отклонение из UI |
+
+На каждом `Call` подписаться на `Callback`:
+
+| Callback | Назначение |
+|---|---|
+| `onStateChanged` | Таймер, transition в active/hold/disconnected |
+| `onDetailsChanged` | Имя, номер, фото |
+| `onConferenceableCallsChanged` | Merge-кнопка |
+| `onCallAudioStateChanged` | Дублирует сервисный, но нужен для per-call UI |
+
+Без `onConferenceableCallsChanged` merge-кнопка не появится. Без `onCallAudioStateChanged` на `Call` mute не синхронизируется между UI и системой. Это не «полный контракт» абстрактно — это конкретный список.
 - **`ROLE_DIALER`:** запрашивается при первом запуске и после сброса настроек. Проверять `RoleManager.isRoleAvailable` перед запросом.
+
+### 9.1. Маппинг `PhoneAccountHandle → simSlot`
+
+`Rule.simSlot` — int. `onPlaceCall` получает `PhoneAccountHandle`. Прямого API «дай слот» нет.
+
+Решение:
+
+| Шаг | Действие |
+|---|---|
+| 1 | При старте приложения: `TelecomManager.getCallCapablePhoneAccounts()` |
+| 2 | Для каждого handle: `TelecomManager.getPhoneAccount(handle)` → `PhoneAccount.getSubscriptionAddress()` / `getExtras().getInt(SubscriptionManager.SIM_SLOT_INDEX)` |
+| 3 | Построить `Map<PhoneAccountHandle, Int>` в репозитории, обновлять по `TelecomManager.ACTION_PHONE_ACCOUNT_REGISTERED` / `UNREGISTERED` |
+| 4 | В `onPlaceCall` — lookup по handle. Если слот неизвестен — правило с `simSlot != null` **не матчится** (fail-safe: не применяем) |
+
+Если `getSubscriptionAddress()` вернул null (бывает на OEM) — слот неизвестен, правило по SIM пропускается. Явно логировать.
+
+### 9.2. Паузы `,` и `;` — принятое решение
+
+**Паузы не входят в строку, возвращаемую из `redirectCall`.** Причина: `Uri` с `tel:`-схемой и `,`/`;` проходит через OEM-цепочку недетерминированно, часть прошивок их теряет или превращает в невалидный номер.
+
+Механика:
+
+| Тип | Реализация |
+|---|---|
+| `,` (пауза 2 сек) | `Call.playDtmfTone` не подходит для паузы. Использовать `Call.postDelayed`-последовательность через `Call.playDtmfTone` для цифр после паузы, с задержкой 2 сек между тонами |
+| `;` (wait for input) | Требует UI-триггера. Кнопка «Продолжить» на экране активного вызова → `Call.playDtmfTone` для следующей порции |
+
+**Следствие:** поле `actionValue` в `Rule` **не содержит** `,` и `;`. Паузы — отдельная сущность `RuleDtmfSequence` (новая таблица) или расширение `CallLogExtras`. Для MVP: **паузы вырезаются из scope**, реализуются в расширенной версии. В ТЗ зафиксировать явно.
+
+### 9.3. Роль Dialer и редирекшн — независимые вещи
+
+`CallRedirectionService` работает **без** `ROLE_DIALER`, если сервис объявлен в манифесте с `intent-filter` на `android.telecom.CallRedirectionService` и `android:permission="android.permission.BIND_CALL_REDIRECTION_SERVICE"`. Система вызывает его при исходящем из **любой** звонилки.
+
+| Состояние | Роль Dialer | Редирекшн активен |
+|---|---|---|
+| Приложение установлено, роль не выдана | Нет | **Да** (по умолчанию) |
+| Роль выдана | Да | Да |
+
+**Корпоративное требование:** префиксы должны работать только когда приложение — Dialer по умолчанию. Иначе сотрудник может вернуть Google Dialer, а префиксы продолжат подставляться — неожиданно.
+
+**Решение:** в `onPlaceCall` проверять `RoleManager.isRoleHeld(ROLE_DIALER)`. Если нет — `redirectCall(originalUri)` без изменений. Флаг `allowRedirectionWithoutRole` (default `false`) в настройках для отладки. Зафиксировать в ТЗ.
 
 ---
 
 ## Открытые вопросы
 
-Нет. Все решения зафиксированы.
+```
+Закрыто в этой ревизии:
+- Механика полуавто-режима (extra через placeCall) — 4.1, 9.3
+- Маппинг PhoneAccountHandle → simSlot — 9.1
+- Паузы , и ; — вырезаны из MVP, механика DTMF после соединения — 9.2
+- T9-кириллица — своя индексация, вынесена в расширенную версию — 3
+- Версионирование JSON — 6
+- Роль Dialer как гейт для редирекшна — 9.3
+- Список обязательных callback InCallService — 9
+```

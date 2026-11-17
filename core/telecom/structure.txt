@@ -1,7 +1,0 @@
-com.example.dialer.core.telecom
-├── InCallServiceImpl.kt
-├── CallRedirectionServiceImpl.kt
-├── TelecomManagerWrapper.kt
-├── PhoneAccountResolver.kt
-├── CallRepository.kt             # Flow<CallState> из InCallService
-└── di/TelecomModule.kt
